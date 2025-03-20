@@ -1373,6 +1373,7 @@ impl TesseractAPI {
     /// # Returns
     ///
     /// Returns the Unicode character as a String if successful, otherwise returns an error.
+    /* removed function to avoid linking errors
     pub fn get_unichar(unichar_id: i32) -> Result<String> {
         let char_ptr = unsafe { TessGetUnichar(unichar_id) };
         if char_ptr.is_null() {
@@ -1381,7 +1382,7 @@ impl TesseractAPI {
             let c_str = unsafe { CStr::from_ptr(char_ptr) };
             Ok(c_str.to_str()?.to_owned())
         }
-    }
+    } */
 
     /// Gets a page iterator for analyzing layout and getting bounding boxes
     pub fn analyze_layout(&self) -> Result<PageIterator> {
@@ -1591,7 +1592,7 @@ extern "C" {
     );
     pub fn TessDeleteText(text: *mut c_char);
 
-    fn TessGetUnichar(unichar_id: c_int) -> *const c_char;
+    // fn TessGetUnichar(unichar_id: c_int) -> *const c_char;
 
     fn TessBaseAPIProcessPages(
         handle: *mut c_void,

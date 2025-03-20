@@ -177,9 +177,9 @@ mod build_tesseract {
                     .define("HAVE_LIBCURL", "OFF")
                     .define("HAVE_TIFFIO_H", "OFF")
                     .define("GRAPHICS_DISABLED", "ON")
-                    .define("DISABLED_LEGACY_ENGINE", "ON")
+                    .define("DISABLED_LEGACY_ENGINE", "OFF")	//fixed linking errors
                     .define("USE_OPENCL", "OFF")
-                    .define("OPENMP_BUILD", "OFF")
+                    .define("OPENMP_BUILD", "ON") 				//this made it faster
                     .define("BUILD_TESTS", "OFF")
                     .define("ENABLE_LTO", "OFF")
                     .define("BUILD_PROG", "OFF")
@@ -252,7 +252,7 @@ mod build_tesseract {
             }
         } else if cfg!(target_os = "windows") {
             // Windows-specific MSVC flags
-            cmake_cxx_flags.push_str("/EHsc /MP ");
+            cmake_cxx_flags.push_str("/EHsc /MP /O2 /LTCG /arch:AVX2 /Ob3 /fp:fast /Qvec-report:2"); //optimized build
             additional_defines.push(("CMAKE_CXX_FLAGS_RELEASE".to_string(), "/MD".to_string()));
             additional_defines.push(("CMAKE_CXX_FLAGS_DEBUG".to_string(), "/MDd".to_string()));
         }
