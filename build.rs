@@ -154,7 +154,7 @@ mod build_tesseract {
                 }
                 leptonica_config
                     .define("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
-                    .define("CMAKE_BUILD_TYPE", "Release")
+                    .profile("Release")
                     .define("BUILD_PROG", "OFF")
                     .define("BUILD_SHARED_LIBS", "OFF")
                     .define("ENABLE_ZLIB", "OFF")
@@ -174,9 +174,7 @@ mod build_tesseract {
 
                 // Windows-specific defines
                 if cfg!(target_os = "windows") {
-                    leptonica_config
-                        .define("CMAKE_C_FLAGS_RELEASE", "/MD /O2")
-                        .define("CMAKE_C_FLAGS_DEBUG", "/MDd /Od");
+                    leptonica_config.define("CMAKE_C_FLAGS_RELEASE", "/MD /O2");
                 }
 
                 for (key, value) in &additional_defines {
@@ -224,7 +222,7 @@ mod build_tesseract {
                 }
                 tesseract_config
                     .define("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
-                    .define("CMAKE_BUILD_TYPE", "Release")
+                    .profile("Release")
                     .define("BUILD_TRAINING_TOOLS", "OFF")
                     .define("BUILD_SHARED_LIBS", "OFF")
                     .define("DISABLE_ARCHIVE", "ON")
