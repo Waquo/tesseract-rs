@@ -172,7 +172,7 @@ mod build_tesseract {
                     .define("HAVE_LIBZ", "0")
                     .define("ENABLE_LTO", "OFF")
                     .define("CMAKE_INSTALL_PREFIX", &leptonica_install_dir);
-                leptonica_config.very_verbose(true);
+
                 for (key, value) in &additional_defines {
                     leptonica_config.define(key, value);
                 }
