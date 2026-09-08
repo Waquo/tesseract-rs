@@ -64,7 +64,7 @@ mod build_tesseract {
 
         println!("cargo:warning=custom_out_dir: {:?}", custom_out_dir);
 
-        let cache_dir = custom_out_dir.join("cache");
+        let cache_dir = custom_out_dir.join("cache").join(cache_dir_key());
 
         if env::var("CARGO_CLEAN").is_ok() {
             clean_cache(&cache_dir);
@@ -154,6 +154,7 @@ mod build_tesseract {
                 }
                 leptonica_config
                     .define("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
+                    .define("CMAKE_POLICY_DEFAULT_CMP0091", "NEW")
                     .profile("Release")
                     .define("BUILD_PROG", "OFF")
                     .define("BUILD_SHARED_LIBS", "OFF")
@@ -171,12 +172,7 @@ mod build_tesseract {
                     .define("HAVE_LIBZ", "0")
                     .define("ENABLE_LTO", "OFF")
                     .define("CMAKE_INSTALL_PREFIX", &leptonica_install_dir);
-
-                // Windows-specific defines
-                if cfg!(target_os = "windows") {
-                    leptonica_config.define("CMAKE_C_FLAGS_RELEASE", "/MD /O2");
-                }
-
+                leptonica_config.very_verbose(true);
                 for (key, value) in &additional_defines {
                     leptonica_config.define(key, value);
                 }
@@ -188,7 +184,14 @@ mod build_tesseract {
         let leptonica_include_dir = leptonica_install_dir.join("include");
         let leptonica_lib_dir = leptonica_install_dir.join("lib");
         let tesseract_install_dir = out_dir.join("tesseract");
-        let tesseract_cache_dir = cache_dir.join("tesseract");
+        let tesseract_cache_key = if let Some(runtime) = openmp_runtime() {
+            format!("tesseract-openmp-{runtime}")
+        } else if cfg!(feature = "openmp") {
+            "tesseract-openmp".to_string()
+        } else {
+            "tesseract-no-openmp".to_string()
+        };
+        let tesseract_cache_dir = cache_dir.join(tesseract_cache_key);
         let tessdata_prefix = project_dir.join("tessdata");
 
         build_or_use_cached(
@@ -252,7 +255,14 @@ mod build_tesseract {
                     .define("GRAPHICS_DISABLED", "ON")
                     .define("DISABLED_LEGACY_ENGINE", "OFF")
                     .define("USE_OPENCL", "OFF")
-                    .define("OPENMP_BUILD", "OFF")
+                    .define(
+                        "OPENMP_BUILD",
+                        if cfg!(feature = "openmp") {
+                            "ON"
+                        } else {
+                            "OFF"
+                        },
+                    )
                     .define("BUILD_TESTS", "OFF")
                     .define("ENABLE_LTO", "OFF")
                     .define("BUILD_PROG", "OFF")
@@ -274,6 +284,7 @@ mod build_tesseract {
         println!("cargo:rerun-if-changed={}", third_party_dir.display());
         println!("cargo:rerun-if-changed={}", leptonica_dir.display());
         println!("cargo:rerun-if-changed={}", tesseract_dir.display());
+        println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
 
         println!(
             "cargo:rustc-link-search=native={}",
@@ -285,7 +296,7 @@ mod build_tesseract {
         );
         // Don't emit link directives here - let build_or_use_cached handle it
 
-        set_os_specific_link_flags();
+        set_os_specific_link_flags(&tesseract_cache_dir);
 
         println!(
             "cargo:warning=Leptonica include dir: {:?}",
@@ -326,11 +337,7 @@ mod build_tesseract {
         } else if cfg!(target_os = "linux") {
             cmake_cxx_flags.push_str("-std=c++17 ");
             // Check if we're on a system using clang
-            if cfg!(target_env = "musl")
-                || env::var("CC")
-                    .map(|cc| cc.contains("clang"))
-                    .unwrap_or(false)
-            {
+            if linux_uses_clang() {
                 cmake_cxx_flags.push_str("-stdlib=libc++ ");
                 additional_defines.push(("CMAKE_CXX_COMPILER".to_string(), "clang++".to_string()));
             } else {
@@ -345,16 +352,23 @@ mod build_tesseract {
         } else if cfg!(target_os = "windows") {
             // Windows-specific MSVC flags
             cmake_cxx_flags.push_str("/EHsc /MP /std:c++17 ");
-            additional_defines.push(("CMAKE_CXX_FLAGS_RELEASE".to_string(), "/MD /O2".to_string()));
-            additional_defines.push(("CMAKE_CXX_FLAGS_DEBUG".to_string(), "/MDd /Od".to_string()));
+            additional_defines.push(("CMAKE_CXX_FLAGS_RELEASE".to_string(), "/O2".to_string()));
             additional_defines.push((
                 "CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS".to_string(),
                 "ON".to_string(),
             ));
-            additional_defines.push((
-                "CMAKE_MSVC_RUNTIME_LIBRARY".to_string(),
-                "MultiThreadedDLL".to_string(),
-            ));
+            if cfg!(target_env = "msvc") {
+                let runtime_library = if target_uses_static_crt() {
+                    "MultiThreaded"
+                } else {
+                    "MultiThreadedDLL"
+                };
+                // this requires CMP0091=NEW, which is default for tesseract and set above for leptonica
+                additional_defines.push((
+                    "CMAKE_MSVC_RUNTIME_LIBRARY".to_string(),
+                    runtime_library.to_string(),
+                ));
+            }
         }
 
         // Common flags and defines for all platforms
@@ -367,15 +381,51 @@ mod build_tesseract {
         (cmake_cxx_flags, additional_defines)
     }
 
-    fn set_os_specific_link_flags() {
+    fn target_uses_static_crt() -> bool {
+        env::var("CARGO_CFG_TARGET_FEATURE")
+            .unwrap_or_default()
+            .split(',')
+            .any(|feature| feature == "crt-static")
+    }
+
+    fn linux_uses_clang() -> bool {
+        cfg!(target_env = "musl")
+            || env::var("CC")
+                .map(|cc| cc.contains("clang"))
+                .unwrap_or(false)
+    }
+
+    fn openmp_runtime() -> Option<&'static str> {
+        if !cfg!(feature = "openmp") {
+            None
+        } else if cfg!(any(target_os = "macos", target_os = "freebsd"))
+            || (cfg!(target_os = "linux") && linux_uses_clang())
+        {
+            Some("omp")
+        } else if cfg!(target_os = "linux") {
+            Some("gomp")
+        } else {
+            None
+        }
+    }
+
+    fn cache_dir_key() -> &'static str {
+        if cfg!(all(target_os = "windows", target_env = "msvc")) {
+            if target_uses_static_crt() {
+                "msvc-mt"
+            } else {
+                "msvc-md"
+            }
+        } else {
+            "default"
+        }
+    }
+
+    fn set_os_specific_link_flags(tesseract_cache_dir: &Path) {
         if cfg!(target_os = "macos") {
             println!("cargo:rustc-link-lib=c++");
         } else if cfg!(target_os = "linux") {
-            if cfg!(target_env = "musl")
-                || env::var("CC")
-                    .map(|cc| cc.contains("clang"))
-                    .unwrap_or(false)
-            {
+            if linux_uses_clang() {
                 println!("cargo:rustc-link-lib=c++");
             } else {
                 println!("cargo:rustc-link-lib=stdc++");
@@ -395,10 +445,77 @@ mod build_tesseract {
             // println!("cargo:rustc-link-lib=gdi32");
         }
 
+        if let Some(runtime) = openmp_runtime() {
+            let (search_dir, runtime) = openmp_link_info(tesseract_cache_dir, runtime);
+            if let Some(search_dir) = search_dir {
+                println!("cargo:rustc-link-search=native={}", search_dir.display());
+            }
+            println!("cargo:rustc-link-lib={runtime}");
+        }
+
         println!(
             "cargo:rustc-link-search=native={}",
             env::var("OUT_DIR").unwrap()
         );
+    }
+
+    fn openmp_link_info(
+        tesseract_cache_dir: &Path,
+        fallback_runtime: &str,
+    ) -> (Option<PathBuf>, String) {
+        let cached_library = tesseract_cache_dir.join("openmp-library.txt");
+        let library_path = fs::read_to_string(&cached_library)
+            .ok()
+            .map(|path| PathBuf::from(path.trim()))
+            .filter(|path| path.is_file())
+            .or_else(|| find_openmp_library_in_cmake_cache());
+
+        if let Some(library_path) = library_path {
+            if let Err(error) =
+                fs::write(&cached_library, library_path.to_string_lossy().as_bytes())
+            {
+                println!("cargo:warning=Failed to cache OpenMP library path: {error}");
+            }
+
+            let runtime =
+                library_link_name(&library_path).unwrap_or_else(|| fallback_runtime.to_string());
+            return (library_path.parent().map(Path::to_path_buf), runtime);
+        }
+
+        (None, fallback_runtime.to_string())
+    }
+
+    fn find_openmp_library_in_cmake_cache() -> Option<PathBuf> {
+        let cmake_cache = PathBuf::from(env::var("OUT_DIR").ok()?)
+            .join("build")
+            .join("CMakeCache.txt");
+        let contents = fs::read_to_string(cmake_cache).ok()?;
+        let library_names = contents
+            .lines()
+            .find_map(|line| line.strip_prefix("OpenMP_CXX_LIB_NAMES:STRING="))?;
+
+        library_names
+            .split(';')
+            .filter(|name| name.contains("omp"))
+            .find_map(|name| {
+                let key = format!("OpenMP_{name}_LIBRARY:FILEPATH=");
+                contents.lines().find_map(|line| {
+                    line.strip_prefix(&key)
+                        .filter(|value| !value.ends_with("-NOTFOUND"))
+                        .map(PathBuf::from)
+                })
+            })
+    }
+
+    fn library_link_name(library_path: &Path) -> Option<String> {
+        let file_name = library_path.file_name()?.to_str()?;
+        let name = file_name.strip_prefix("lib").unwrap_or(file_name);
+        let suffix = [".so", ".dylib", ".a"]
+            .iter()
+            .filter_map(|suffix| name.find(suffix))
+            .min()
+            .unwrap_or(name.len());
+        Some(name[..suffix].to_string())
     }
 
     fn download_and_extract(target_dir: &Path, url: &str, name: &str) -> PathBuf {
