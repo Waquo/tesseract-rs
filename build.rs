@@ -116,8 +116,6 @@ mod build_tesseract {
                 .define("ENABLE_WEBP", "OFF")
                 .define("ENABLE_OPENJPEG", "OFF")
                 .define("ENABLE_GIF", "OFF")
-                // A C compiler definition: keep errors, omit lower-severity diagnostics.
-                .cflag("-DMINIMUM_SEVERITY=L_SEVERITY_ERROR")
                 .define("CMAKE_CXX_FLAGS", &cmake_cxx_flags)
                 .define("SW_BUILD", "OFF")
                 .define("HAVE_LIBZ", "0")
@@ -278,6 +276,10 @@ mod build_tesseract {
 
         // Common flags and defines for all platforms
         cmake_cxx_flags.push_str("-DUSE_STD_NAMESPACE ");
+        // Keep recognition images in memory without PNG encoding/decoding.
+        cmake_cxx_flags.push_str("-DTESSERACT_IMAGEDATA_AS_PIX ");
+        // Debug caption fonts require TIFF support, which is disabled above.
+        cmake_cxx_flags.push_str("-DTESSERACT_DISABLE_DEBUG_FONTS ");
         additional_defines.push((
             "CMAKE_POSITION_INDEPENDENT_CODE".to_string(),
             "ON".to_string(),

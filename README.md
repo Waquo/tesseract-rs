@@ -442,6 +442,18 @@ cargo build
 
 For more detailed information, please check the [API documentation](https://docs.rs/tesseract-rs).
 
+### Bundled-build diagnostic limitations
+
+Bundled builds disable the bitmap fonts used to caption Tesseract's diagnostic
+images (`TESSERACT_DISABLE_DEBUG_FONTS`). Normal OCR results are unaffected, but
+captioned diagnostic images are not fully supported. Options such as
+`tessedit_dump_pageseg_images`, `textord_tabfind_show_images`, and
+`devanagari_split_debugimage`, enabled through the variable/configuration APIs,
+may produce uncaptioned images and `no bitmap fonts; returning a copy` errors.
+Accepting a diagnostic option does not guarantee that its output is supported.
+This limitation does not apply to system builds unless their Tesseract was
+configured similarly.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
