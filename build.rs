@@ -88,39 +88,6 @@ mod build_tesseract {
             let mut leptonica_config = Config::new(&leptonica_src_dir);
             leptonica_config.out_dir(&leptonica_install_dir);
 
-            let environ_h_path = leptonica_src_dir.join("src").join("environ.h");
-
-            // Only modify environ.h if it exists
-            if environ_h_path.exists() {
-                let mut environ_h = std::fs::read_to_string(&environ_h_path)
-                    .expect("Failed to read environ.h")
-                    .replace(
-                        "#define  HAVE_LIBZ          1",
-                        "#define  HAVE_LIBZ          0",
-                    );
-                if !environ_h.contains("#define NO_CONSOLE_IO\n#ifdef  NO_CONSOLE_IO") {
-                    environ_h = environ_h.replace(
-                        "#ifdef  NO_CONSOLE_IO",
-                        "#define NO_CONSOLE_IO\n#ifdef  NO_CONSOLE_IO",
-                    );
-                }
-                std::fs::write(environ_h_path, environ_h).expect("Failed to write environ.h");
-            }
-
-            let makefile_static_path = leptonica_src_dir.join("prog").join("makefile.static");
-
-            // Only modify makefile.static if it exists
-            if makefile_static_path.exists() {
-                let makefile_static = std::fs::read_to_string(&makefile_static_path)
-                    .expect("Failed to read makefile.static")
-                    .replace(
-                        "ALL_LIBS =	$(LEPTLIB) -ltiff -ljpeg -lpng -lz -lm",
-                        "ALL_LIBS =	$(LEPTLIB) -lm",
-                    );
-                std::fs::write(makefile_static_path, makefile_static)
-                    .expect("Failed to write makefile.static");
-            }
-
             // Configure build tools
             if cfg!(target_os = "windows") {
                 // Use NMake on Windows for better compatibility
@@ -149,9 +116,9 @@ mod build_tesseract {
                 .define("ENABLE_WEBP", "OFF")
                 .define("ENABLE_OPENJPEG", "OFF")
                 .define("ENABLE_GIF", "OFF")
-                .define("NO_CONSOLE_IO", "ON")
+                // A C compiler definition: keep errors, omit lower-severity diagnostics.
+                .cflag("-DMINIMUM_SEVERITY=L_SEVERITY_ERROR")
                 .define("CMAKE_CXX_FLAGS", &cmake_cxx_flags)
-                .define("MINIMUM_SEVERITY", "L_SEVERITY_NONE")
                 .define("SW_BUILD", "OFF")
                 .define("HAVE_LIBZ", "0")
                 .define("ENABLE_LTO", "OFF");
@@ -169,12 +136,6 @@ mod build_tesseract {
         let tessdata_prefix = user_data_dir.join("tessdata");
 
         build_and_normalize("tesseract", &tesseract_install_dir, || {
-            let cmakelists_path = tesseract_src_dir.join("CMakeLists.txt");
-            let cmakelists = std::fs::read_to_string(&cmakelists_path)
-                .expect("Failed to read CMakeLists.txt")
-                .replace("set(HAVE_TIFFIO_H ON)", "");
-            std::fs::write(&cmakelists_path, cmakelists).expect("Failed to write CMakeLists.txt");
-
             let mut tesseract_config = Config::new(&tesseract_src_dir);
             tesseract_config.out_dir(&tesseract_install_dir);
             // Configure build tools
