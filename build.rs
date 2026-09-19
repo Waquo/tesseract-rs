@@ -184,8 +184,8 @@ mod build_tesseract {
         let leptonica_include_dir = leptonica_install_dir.join("include");
         let leptonica_lib_dir = leptonica_install_dir.join("lib");
         let tesseract_install_dir = out_dir.join("tesseract");
-        let tesseract_cache_key = if let Some(runtime) = openmp_runtime() {
-            format!("tesseract-openmp-{runtime}")
+        let tesseract_cache_key = if let Some(runtime) = expected_openmp_runtime() {
+            format!("tesseract-openmp-{}", runtime.link_name().as_str())
         } else if cfg!(feature = "openmp") {
             "tesseract-openmp".to_string()
         } else {
@@ -286,17 +286,11 @@ mod build_tesseract {
         println!("cargo:rerun-if-changed={}", tesseract_dir.display());
         println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
 
-        println!(
-            "cargo:rustc-link-search=native={}",
-            leptonica_lib_dir.display()
+        emit_link_directives(
+            &leptonica_install_dir,
+            &tesseract_install_dir,
+            &tesseract_cache_dir,
         );
-        println!(
-            "cargo:rustc-link-search=native={}",
-            tesseract_install_dir.join("lib").display()
-        );
-        // Don't emit link directives here - let build_or_use_cached handle it
-
-        set_os_specific_link_flags(&tesseract_cache_dir);
 
         println!(
             "cargo:warning=Leptonica include dir: {:?}",
@@ -395,16 +389,44 @@ mod build_tesseract {
                 .unwrap_or(false)
     }
 
-    fn openmp_runtime() -> Option<&'static str> {
+    #[derive(Clone, Copy)]
+    enum OpenMpRuntime {
+        Llvm,
+        Gnu,
+    }
+
+    impl OpenMpRuntime {
+        fn link_name(self) -> RustcLinkName {
+            match self {
+                Self::Llvm => RustcLinkName::known("omp"),
+                Self::Gnu => RustcLinkName::known("gomp"),
+            }
+        }
+    }
+
+    struct RustcLinkName(String);
+
+    impl RustcLinkName {
+        fn known(name: &str) -> Self {
+            Self(name.to_string())
+        }
+
+        fn as_str(&self) -> &str {
+            &self.0
+        }
+    }
+
+    fn expected_openmp_runtime() -> Option<OpenMpRuntime> {
         if !cfg!(feature = "openmp") {
             None
         } else if cfg!(any(target_os = "macos", target_os = "freebsd"))
             || (cfg!(target_os = "linux") && linux_uses_clang())
         {
-            Some("omp")
+            Some(OpenMpRuntime::Llvm)
         } else if cfg!(target_os = "linux") {
-            Some("gomp")
+            Some(OpenMpRuntime::Gnu)
         } else {
+            //Windows openmp runtime is linked automatically, nothing to do for us
             None
         }
     }
@@ -421,7 +443,22 @@ mod build_tesseract {
         }
     }
 
-    fn set_os_specific_link_flags(tesseract_cache_dir: &Path) {
+    fn emit_link_directives(
+        leptonica_install_dir: &Path,
+        tesseract_install_dir: &Path,
+        tesseract_cache_dir: &Path,
+    ) {
+        println!(
+            "cargo:rustc-link-search=native={}",
+            leptonica_install_dir.join("lib").display()
+        );
+        println!("cargo:rustc-link-lib=static=leptonica");
+        println!(
+            "cargo:rustc-link-search=native={}",
+            tesseract_install_dir.join("lib").display()
+        );
+        println!("cargo:rustc-link-lib=static=tesseract");
+
         if cfg!(target_os = "macos") {
             println!("cargo:rustc-link-lib=c++");
         } else if cfg!(target_os = "linux") {
@@ -445,12 +482,12 @@ mod build_tesseract {
             // println!("cargo:rustc-link-lib=gdi32");
         }
 
-        if let Some(runtime) = openmp_runtime() {
+        if let Some(runtime) = expected_openmp_runtime() {
             let (search_dir, runtime) = openmp_link_info(tesseract_cache_dir, runtime);
             if let Some(search_dir) = search_dir {
                 println!("cargo:rustc-link-search=native={}", search_dir.display());
             }
-            println!("cargo:rustc-link-lib={runtime}");
+            println!("cargo:rustc-link-lib={}", runtime.as_str());
         }
 
         println!(
@@ -461,8 +498,8 @@ mod build_tesseract {
 
     fn openmp_link_info(
         tesseract_cache_dir: &Path,
-        fallback_runtime: &str,
-    ) -> (Option<PathBuf>, String) {
+        expected_runtime: OpenMpRuntime,
+    ) -> (Option<PathBuf>, RustcLinkName) {
         let cached_library = tesseract_cache_dir.join("openmp-library.txt");
         let library_path = fs::read_to_string(&cached_library)
             .ok()
@@ -478,11 +515,11 @@ mod build_tesseract {
             }
 
             let runtime =
-                library_link_name(&library_path).unwrap_or_else(|| fallback_runtime.to_string());
+                library_link_name(&library_path).unwrap_or_else(|| expected_runtime.link_name());
             return (library_path.parent().map(Path::to_path_buf), runtime);
         }
 
-        (None, fallback_runtime.to_string())
+        (None, expected_runtime.link_name())
     }
 
     fn find_openmp_library_in_cmake_cache() -> Option<PathBuf> {
@@ -496,6 +533,8 @@ mod build_tesseract {
 
         library_names
             .split(';')
+            // OpenMP_CXX_LIB_NAMES may also contain dependencies such as pthread.
+            // Select the runtime-like entry: commonly gomp, libomp, or iomp5.
             .filter(|name| name.contains("omp"))
             .find_map(|name| {
                 let key = format!("OpenMP_{name}_LIBRARY:FILEPATH=");
@@ -507,15 +546,20 @@ mod build_tesseract {
             })
     }
 
-    fn library_link_name(library_path: &Path) -> Option<String> {
+    /// Converts a library filename into the name expected by `rustc-link-lib`
+    /// by removing an optional `lib` prefix and a recognized library suffix.
+    ///
+    /// For example, `libiomp5.so` becomes `iomp5`. CMake may select runtimes
+    /// other than the usual `omp` and `gomp`.
+    fn library_link_name(library_path: &Path) -> Option<RustcLinkName> {
         let file_name = library_path.file_name()?.to_str()?;
         let name = file_name.strip_prefix("lib").unwrap_or(file_name);
-        let suffix = [".so", ".dylib", ".a"]
+        let suffix = [".so", ".dylib", ".a", ".lib"]
             .iter()
             .filter_map(|suffix| name.find(suffix))
             .min()
             .unwrap_or(name.len());
-        Some(name[..suffix].to_string())
+        Some(RustcLinkName(name[..suffix].to_string()))
     }
 
     fn download_and_extract(target_dir: &Path, url: &str, name: &str) -> PathBuf {
@@ -741,17 +785,6 @@ mod build_tesseract {
                 }
             }
         }
-
-        println!(
-            "cargo:rustc-link-search=native={}",
-            install_dir.join("lib").display()
-        );
-
-        // The actual built library (any of possible_lib_names, including the
-        // MSVC debug "d"-suffixed variant) is copied to the generic
-        // "{name}.lib" / "lib{name}.a" above, so a single generic link works
-        // for both debug and release without hardcoding a versioned name.
-        println!("cargo:rustc-link-lib=static={}", name);
     }
 }
 
