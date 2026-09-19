@@ -175,3 +175,24 @@ jobs:
       with:
         file: ./cobertura.xml
         fail_ci_if_error: false
+
+  clang-openmp:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Clang build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential clang libc++-dev libc++abi-dev libomp-dev
+
+    - name: Build OpenMP example with Clang
+      run: cargo build --example embedded_example --features openmp,embed-tessdata --verbose
+      env:
+        CC: clang
+        CXX: clang++
+        RUSTC_WRAPPER: ""
