@@ -92,16 +92,16 @@ jobs:
         prefix-key: "v1-rust"
         key: "build-${{ matrix.os }}"
     
-    - name: Cache build artifacts
+    - name: Cache tessdata
       uses: actions/cache@v3
       with:
         path: |
-          ${{ runner.os == 'Windows' && 'C:\Users\runneradmin\AppData\Roaming\tesseract-rs' || '' }}
-          ${{ runner.os == 'macOS' && '~/Library/Application Support/tesseract-rs' || '' }}
-          ${{ runner.os == 'Linux' && '~/.tesseract-rs' || '' }}
-        key: ${{ runner.os }}-tesseract-artifacts-${{ hashFiles('build.rs', 'Cargo.toml') }}
+          ${{ runner.os == 'Windows' && 'C:\Users\runneradmin\AppData\Roaming\tesseract-rs\tessdata' || '' }}
+          ${{ runner.os == 'macOS' && '~/Library/Application Support/tesseract-rs/tessdata' || '' }}
+          ${{ runner.os == 'Linux' && '~/.tesseract-rs/tessdata' || '' }}
+        key: ${{ runner.os }}-tesseract-data-v2-${{ hashFiles('build.rs', 'Cargo.toml') }}
         restore-keys: |
-          ${{ runner.os }}-tesseract-artifacts-
+          ${{ runner.os }}-tesseract-data-v2-
     
     - name: Setup MSVC environment (Windows)
       if: matrix.os == 'windows-latest'
@@ -145,14 +145,14 @@ jobs:
         prefix-key: "v1-rust"
         key: "coverage"
     
-    - name: Cache build artifacts
+    - name: Cache tessdata
       uses: actions/cache@v3
       with:
         path: |
-          ~/.tesseract-rs
-        key: ${{ runner.os }}-tesseract-artifacts-coverage-${{ hashFiles('build.rs', 'Cargo.toml') }}
+          ~/.tesseract-rs/tessdata
+        key: ${{ runner.os }}-tesseract-data-v2-coverage-${{ hashFiles('build.rs', 'Cargo.toml') }}
         restore-keys: |
-          ${{ runner.os }}-tesseract-artifacts-coverage-
+          ${{ runner.os }}-tesseract-data-v2-coverage-
     
     - name: Install dependencies
       run: |

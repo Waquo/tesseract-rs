@@ -16,13 +16,13 @@ mod build_tesseract {
 
     // Use specific release versions for stability.
     // NOTE: when bumping these, also update the Windows library name variants
-    // in build_or_use_cached() (leptonica-<ver>.lib and tesseract<MAJ><MIN>.lib).
+    // in build_and_normalize() (leptonica-<ver>.lib and tesseract<MAJ><MIN>.lib).
     const LEPTONICA_URL: &str =
         "https://github.com/DanBloomberg/leptonica/archive/refs/tags/1.87.0.zip";
     const TESSERACT_URL: &str =
         "https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.2.zip";
 
-    pub fn get_custom_out_dir() -> PathBuf {
+    pub fn get_user_data_dir() -> PathBuf {
         if cfg!(target_os = "macos") {
             let home_dir = env::var("HOME").unwrap_or_else(|_| {
                 env::var("USER")
@@ -59,24 +59,13 @@ mod build_tesseract {
     }
 
     pub fn build() {
-        let custom_out_dir = get_custom_out_dir();
-        std::fs::create_dir_all(&custom_out_dir).expect("Failed to create custom out directory");
+        let user_data_dir = get_user_data_dir();
+        fs::create_dir_all(&user_data_dir).expect("Failed to create user data directory");
 
-        println!("cargo:warning=custom_out_dir: {:?}", custom_out_dir);
+        let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is not set"));
+        let third_party_dir = out_dir.join("third_party");
 
-        let cache_dir = custom_out_dir.join("cache").join(cache_dir_key());
-
-        if env::var("CARGO_CLEAN").is_ok() {
-            clean_cache(&cache_dir);
-        }
-
-        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-
-        let out_dir = custom_out_dir.clone();
-        let project_dir = custom_out_dir.clone();
-        let third_party_dir = project_dir.join("third_party");
-
-        let leptonica_dir = if third_party_dir.join("leptonica").exists() {
+        let leptonica_src_dir = if third_party_dir.join("leptonica").exists() {
             println!("cargo:warning=Using existing leptonica source");
             third_party_dir.join("leptonica")
         } else {
@@ -84,7 +73,7 @@ mod build_tesseract {
             download_and_extract(&third_party_dir, LEPTONICA_URL, "leptonica")
         };
 
-        let tesseract_dir = if third_party_dir.join("tesseract").exists() {
+        let tesseract_src_dir = if third_party_dir.join("tesseract").exists() {
             println!("cargo:warning=Using existing tesseract source");
             third_party_dir.join("tesseract")
         } else {
@@ -95,215 +84,176 @@ mod build_tesseract {
         let (cmake_cxx_flags, additional_defines) = get_os_specific_config();
 
         let leptonica_install_dir = out_dir.join("leptonica");
-        let leptonica_cache_dir = cache_dir.join("leptonica");
+        build_and_normalize("leptonica", &leptonica_install_dir, || {
+            let mut leptonica_config = Config::new(&leptonica_src_dir);
+            leptonica_config.out_dir(&leptonica_install_dir);
 
-        build_or_use_cached(
-            "leptonica",
-            &leptonica_cache_dir,
-            &leptonica_install_dir,
-            || {
-                let mut leptonica_config = Config::new(&leptonica_dir);
+            let environ_h_path = leptonica_src_dir.join("src").join("environ.h");
 
-                let leptonica_src_dir = leptonica_dir.join("src");
-                let environ_h_path = leptonica_src_dir.join("environ.h");
-
-                // Only modify environ.h if it exists
-                if environ_h_path.exists() {
-                    let environ_h = std::fs::read_to_string(&environ_h_path)
-                        .expect("Failed to read environ.h")
-                        .replace(
-                            "#define  HAVE_LIBZ          1",
-                            "#define  HAVE_LIBZ          0",
-                        )
-                        .replace(
-                            "#ifdef  NO_CONSOLE_IO",
-                            "#define NO_CONSOLE_IO\n#ifdef  NO_CONSOLE_IO",
-                        );
-                    std::fs::write(environ_h_path, environ_h).expect("Failed to write environ.h");
+            // Only modify environ.h if it exists
+            if environ_h_path.exists() {
+                let mut environ_h = std::fs::read_to_string(&environ_h_path)
+                    .expect("Failed to read environ.h")
+                    .replace(
+                        "#define  HAVE_LIBZ          1",
+                        "#define  HAVE_LIBZ          0",
+                    );
+                if !environ_h.contains("#define NO_CONSOLE_IO\n#ifdef  NO_CONSOLE_IO") {
+                    environ_h = environ_h.replace(
+                        "#ifdef  NO_CONSOLE_IO",
+                        "#define NO_CONSOLE_IO\n#ifdef  NO_CONSOLE_IO",
+                    );
                 }
+                std::fs::write(environ_h_path, environ_h).expect("Failed to write environ.h");
+            }
 
-                let makefile_static_path = leptonica_dir.join("prog").join("makefile.static");
+            let makefile_static_path = leptonica_src_dir.join("prog").join("makefile.static");
 
-                // Only modify makefile.static if it exists
-                if makefile_static_path.exists() {
-                    let makefile_static = std::fs::read_to_string(&makefile_static_path)
-                        .expect("Failed to read makefile.static")
-                        .replace(
-                            "ALL_LIBS =	$(LEPTLIB) -ltiff -ljpeg -lpng -lz -lm",
-                            "ALL_LIBS =	$(LEPTLIB) -lm",
-                        );
-                    std::fs::write(makefile_static_path, makefile_static)
-                        .expect("Failed to write makefile.static");
+            // Only modify makefile.static if it exists
+            if makefile_static_path.exists() {
+                let makefile_static = std::fs::read_to_string(&makefile_static_path)
+                    .expect("Failed to read makefile.static")
+                    .replace(
+                        "ALL_LIBS =	$(LEPTLIB) -ltiff -ljpeg -lpng -lz -lm",
+                        "ALL_LIBS =	$(LEPTLIB) -lm",
+                    );
+                std::fs::write(makefile_static_path, makefile_static)
+                    .expect("Failed to write makefile.static");
+            }
+
+            // Configure build tools
+            if cfg!(target_os = "windows") {
+                // Use NMake on Windows for better compatibility
+                if let Ok(_vs_install_dir) = env::var("VSINSTALLDIR") {
+                    leptonica_config.generator("NMake Makefiles");
                 }
+            }
 
-                // Configure build tools
-                if cfg!(target_os = "windows") {
-                    // Use NMake on Windows for better compatibility
-                    if let Ok(_vs_install_dir) = env::var("VSINSTALLDIR") {
-                        leptonica_config.generator("NMake Makefiles");
-                    }
-                }
-
-                // Only use sccache if not in CI
-                if env::var("CI").is_err()
-                    && env::var("RUSTC_WRAPPER").unwrap_or_default() == "sccache"
-                {
-                    leptonica_config
-                        .env("CC", "sccache cc")
-                        .env("CXX", "sccache c++");
-                }
+            // Only use sccache if not in CI
+            if env::var("CI").is_err() && env::var("RUSTC_WRAPPER").unwrap_or_default() == "sccache"
+            {
                 leptonica_config
-                    .define("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
-                    .define("CMAKE_POLICY_DEFAULT_CMP0091", "NEW")
-                    .profile("Release")
-                    .define("BUILD_PROG", "OFF")
-                    .define("BUILD_SHARED_LIBS", "OFF")
-                    .define("ENABLE_ZLIB", "OFF")
-                    .define("ENABLE_PNG", "OFF")
-                    .define("ENABLE_JPEG", "OFF")
-                    .define("ENABLE_TIFF", "OFF")
-                    .define("ENABLE_WEBP", "OFF")
-                    .define("ENABLE_OPENJPEG", "OFF")
-                    .define("ENABLE_GIF", "OFF")
-                    .define("NO_CONSOLE_IO", "ON")
-                    .define("CMAKE_CXX_FLAGS", &cmake_cxx_flags)
-                    .define("MINIMUM_SEVERITY", "L_SEVERITY_NONE")
-                    .define("SW_BUILD", "OFF")
-                    .define("HAVE_LIBZ", "0")
-                    .define("ENABLE_LTO", "OFF")
-                    .define("CMAKE_INSTALL_PREFIX", &leptonica_install_dir);
+                    .env("CC", "sccache cc")
+                    .env("CXX", "sccache c++");
+            }
+            leptonica_config
+                .define("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
+                .define("CMAKE_POLICY_DEFAULT_CMP0091", "NEW")
+                .profile("Release")
+                .define("BUILD_PROG", "OFF")
+                .define("BUILD_SHARED_LIBS", "OFF")
+                .define("ENABLE_ZLIB", "OFF")
+                .define("ENABLE_PNG", "OFF")
+                .define("ENABLE_JPEG", "OFF")
+                .define("ENABLE_TIFF", "OFF")
+                .define("ENABLE_WEBP", "OFF")
+                .define("ENABLE_OPENJPEG", "OFF")
+                .define("ENABLE_GIF", "OFF")
+                .define("NO_CONSOLE_IO", "ON")
+                .define("CMAKE_CXX_FLAGS", &cmake_cxx_flags)
+                .define("MINIMUM_SEVERITY", "L_SEVERITY_NONE")
+                .define("SW_BUILD", "OFF")
+                .define("HAVE_LIBZ", "0")
+                .define("ENABLE_LTO", "OFF");
 
-                for (key, value) in &additional_defines {
-                    leptonica_config.define(key, value);
-                }
+            for (key, value) in &additional_defines {
+                leptonica_config.define(key, value);
+            }
 
-                leptonica_config.build();
-            },
-        );
+            leptonica_config.build();
+        });
 
         let leptonica_include_dir = leptonica_install_dir.join("include");
         let leptonica_lib_dir = leptonica_install_dir.join("lib");
         let tesseract_install_dir = out_dir.join("tesseract");
-        let tesseract_cache_key = if let Some(runtime) = expected_openmp_runtime() {
-            format!("tesseract-openmp-{}", runtime.link_name().as_str())
-        } else if cfg!(feature = "openmp") {
-            "tesseract-openmp".to_string()
-        } else {
-            "tesseract-no-openmp".to_string()
-        };
-        let tesseract_cache_dir = cache_dir.join(tesseract_cache_key);
-        let tessdata_prefix = project_dir.join("tessdata");
+        let tessdata_prefix = user_data_dir.join("tessdata");
 
-        build_or_use_cached(
-            "tesseract",
-            &tesseract_cache_dir,
-            &tesseract_install_dir,
-            || {
-                let cmakelists_path = tesseract_dir.join("CMakeLists.txt");
-                let cmakelists = std::fs::read_to_string(&cmakelists_path)
-                    .expect("Failed to read CMakeLists.txt")
-                    .replace("set(HAVE_TIFFIO_H ON)", "");
-                std::fs::write(&cmakelists_path, cmakelists)
-                    .expect("Failed to write CMakeLists.txt");
+        build_and_normalize("tesseract", &tesseract_install_dir, || {
+            let cmakelists_path = tesseract_src_dir.join("CMakeLists.txt");
+            let cmakelists = std::fs::read_to_string(&cmakelists_path)
+                .expect("Failed to read CMakeLists.txt")
+                .replace("set(HAVE_TIFFIO_H ON)", "");
+            std::fs::write(&cmakelists_path, cmakelists).expect("Failed to write CMakeLists.txt");
 
-                let mut tesseract_config = Config::new(&tesseract_dir);
-                // Configure build tools
-                if cfg!(target_os = "windows") {
-                    // Use NMake on Windows for better compatibility
-                    if let Ok(_vs_install_dir) = env::var("VSINSTALLDIR") {
-                        tesseract_config.generator("NMake Makefiles");
-                    }
+            let mut tesseract_config = Config::new(&tesseract_src_dir);
+            tesseract_config.out_dir(&tesseract_install_dir);
+            // Configure build tools
+            if cfg!(target_os = "windows") {
+                // Use NMake on Windows for better compatibility
+                if let Ok(_vs_install_dir) = env::var("VSINSTALLDIR") {
+                    tesseract_config.generator("NMake Makefiles");
                 }
+            }
 
-                // Only use sccache if not in CI
-                if env::var("CI").is_err()
-                    && env::var("RUSTC_WRAPPER").unwrap_or_default() == "sccache"
-                {
-                    tesseract_config
-                        .env("CC", "sccache cc")
-                        .env("CXX", "sccache c++");
-                }
+            // Only use sccache if not in CI
+            if env::var("CI").is_err() && env::var("RUSTC_WRAPPER").unwrap_or_default() == "sccache"
+            {
                 tesseract_config
-                    .define("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
-                    .profile("Release")
-                    .define("BUILD_TRAINING_TOOLS", "OFF")
-                    .define("BUILD_SHARED_LIBS", "OFF")
-                    .define("DISABLE_ARCHIVE", "ON")
-                    .define("DISABLE_CURL", "ON")
-                    .define("DISABLE_OPENCL", "ON")
-                    .define("Leptonica_DIR", &leptonica_install_dir)
-                    .define("LEPTONICA_INCLUDE_DIR", &leptonica_include_dir)
-                    .define("LEPTONICA_LIBRARY", &leptonica_lib_dir)
-                    .define("CMAKE_PREFIX_PATH", &leptonica_install_dir)
-                    .define("CMAKE_INSTALL_PREFIX", &tesseract_install_dir)
-                    .define("TESSDATA_PREFIX", &tessdata_prefix)
-                    .define("DISABLE_TIFF", "ON")
-                    .define("DISABLE_PNG", "ON")
-                    .define("DISABLE_JPEG", "ON")
-                    .define("DISABLE_WEBP", "ON")
-                    .define("DISABLE_OPENJPEG", "ON")
-                    .define("DISABLE_ZLIB", "ON")
-                    .define("DISABLE_LIBXML2", "ON")
-                    .define("DISABLE_LIBICU", "ON")
-                    .define("DISABLE_LZMA", "ON")
-                    .define("DISABLE_GIF", "ON")
-                    .define("DISABLE_DEBUG_MESSAGES", "ON")
-                    .define("debug_file", "/dev/null")
-                    .define("HAVE_LIBARCHIVE", "OFF")
-                    .define("HAVE_LIBCURL", "OFF")
-                    .define("HAVE_TIFFIO_H", "OFF")
-                    .define("GRAPHICS_DISABLED", "ON")
-                    .define("DISABLED_LEGACY_ENGINE", "OFF")
-                    .define("USE_OPENCL", "OFF")
-                    .define(
-                        "OPENMP_BUILD",
-                        if cfg!(feature = "openmp") {
-                            "ON"
-                        } else {
-                            "OFF"
-                        },
-                    )
-                    .define("BUILD_TESTS", "OFF")
-                    .define("ENABLE_LTO", "OFF")
-                    .define("BUILD_PROG", "OFF")
-                    .define("SW_BUILD", "OFF")
-                    .define("LEPT_TIFF_RESULT", "FALSE")
-                    .define("INSTALL_CONFIGS", "ON")
-                    .define("USE_SYSTEM_ICU", "ON")
-                    .define("CMAKE_CXX_FLAGS", &cmake_cxx_flags);
+                    .env("CC", "sccache cc")
+                    .env("CXX", "sccache c++");
+            }
+            tesseract_config
+                .define("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
+                .profile("Release")
+                .define("BUILD_TRAINING_TOOLS", "OFF")
+                .define("BUILD_SHARED_LIBS", "OFF")
+                .define("DISABLE_ARCHIVE", "ON")
+                .define("DISABLE_CURL", "ON")
+                .define("DISABLE_OPENCL", "ON")
+                .define("Leptonica_DIR", &leptonica_install_dir)
+                .define("LEPTONICA_INCLUDE_DIR", &leptonica_include_dir)
+                .define("LEPTONICA_LIBRARY", &leptonica_lib_dir)
+                .define("CMAKE_PREFIX_PATH", &leptonica_install_dir)
+                .define("TESSDATA_PREFIX", &tessdata_prefix)
+                .define("DISABLE_TIFF", "ON")
+                .define("DISABLE_PNG", "ON")
+                .define("DISABLE_JPEG", "ON")
+                .define("DISABLE_WEBP", "ON")
+                .define("DISABLE_OPENJPEG", "ON")
+                .define("DISABLE_ZLIB", "ON")
+                .define("DISABLE_LIBXML2", "ON")
+                .define("DISABLE_LIBICU", "ON")
+                .define("DISABLE_LZMA", "ON")
+                .define("DISABLE_GIF", "ON")
+                .define("DISABLE_DEBUG_MESSAGES", "ON")
+                .define("debug_file", "/dev/null")
+                .define("HAVE_LIBARCHIVE", "OFF")
+                .define("HAVE_LIBCURL", "OFF")
+                .define("HAVE_TIFFIO_H", "OFF")
+                .define("GRAPHICS_DISABLED", "ON")
+                .define("DISABLED_LEGACY_ENGINE", "OFF")
+                .define("USE_OPENCL", "OFF")
+                .define(
+                    "OPENMP_BUILD",
+                    if cfg!(feature = "openmp") {
+                        "ON"
+                    } else {
+                        "OFF"
+                    },
+                )
+                .define("BUILD_TESTS", "OFF")
+                .define("ENABLE_LTO", "OFF")
+                .define("BUILD_PROG", "OFF")
+                .define("SW_BUILD", "OFF")
+                .define("LEPT_TIFF_RESULT", "FALSE")
+                .define("INSTALL_CONFIGS", "ON")
+                .define("USE_SYSTEM_ICU", "ON")
+                .define("CMAKE_CXX_FLAGS", &cmake_cxx_flags);
 
-                for (key, value) in &additional_defines {
-                    tesseract_config.define(key, value);
-                }
+            for (key, value) in &additional_defines {
+                tesseract_config.define(key, value);
+            }
 
-                tesseract_config.build();
-            },
-        );
+            tesseract_config.build();
+        });
 
         println!("cargo:rerun-if-changed=build.rs");
-        println!("cargo:rerun-if-changed={}", third_party_dir.display());
-        println!("cargo:rerun-if-changed={}", leptonica_dir.display());
-        println!("cargo:rerun-if-changed={}", tesseract_dir.display());
         println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
+        emit_link_directives(&leptonica_install_dir, &tesseract_install_dir);
 
-        emit_link_directives(
-            &leptonica_install_dir,
-            &tesseract_install_dir,
-            &tesseract_cache_dir,
-        );
-
-        println!(
-            "cargo:warning=Leptonica include dir: {:?}",
-            leptonica_include_dir
-        );
-        println!("cargo:warning=Leptonica lib dir: {:?}", leptonica_lib_dir);
-        println!(
-            "cargo:warning=Tesseract install dir: {:?}",
-            tesseract_install_dir
-        );
         println!("cargo:warning=Tessdata dir: {:?}", tessdata_prefix);
 
-        download_tessdata(&project_dir);
+        download_tessdata(&user_data_dir);
     }
 
     fn get_os_specific_config() -> (String, Vec<(String, String)>) {
@@ -431,23 +381,7 @@ mod build_tesseract {
         }
     }
 
-    fn cache_dir_key() -> &'static str {
-        if cfg!(all(target_os = "windows", target_env = "msvc")) {
-            if target_uses_static_crt() {
-                "msvc-mt"
-            } else {
-                "msvc-md"
-            }
-        } else {
-            "default"
-        }
-    }
-
-    fn emit_link_directives(
-        leptonica_install_dir: &Path,
-        tesseract_install_dir: &Path,
-        tesseract_cache_dir: &Path,
-    ) {
+    fn emit_link_directives(leptonica_install_dir: &Path, tesseract_install_dir: &Path) {
         println!(
             "cargo:rustc-link-search=native={}",
             leptonica_install_dir.join("lib").display()
@@ -482,12 +416,13 @@ mod build_tesseract {
             // println!("cargo:rustc-link-lib=gdi32");
         }
 
-        if let Some(runtime) = expected_openmp_runtime() {
-            let (search_dir, runtime) = openmp_link_info(tesseract_cache_dir, runtime);
+        if let Some(expected_runtime) = expected_openmp_runtime() {
+            let (search_dir, runtime_link_name) =
+                openmp_link_info(tesseract_install_dir, expected_runtime);
             if let Some(search_dir) = search_dir {
                 println!("cargo:rustc-link-search=native={}", search_dir.display());
             }
-            println!("cargo:rustc-link-lib={}", runtime.as_str());
+            println!("cargo:rustc-link-lib={}", runtime_link_name.as_str());
         }
 
         println!(
@@ -497,23 +432,12 @@ mod build_tesseract {
     }
 
     fn openmp_link_info(
-        tesseract_cache_dir: &Path,
+        tesseract_install_dir: &Path,
         expected_runtime: OpenMpRuntime,
     ) -> (Option<PathBuf>, RustcLinkName) {
-        let cached_library = tesseract_cache_dir.join("openmp-library.txt");
-        let library_path = fs::read_to_string(&cached_library)
-            .ok()
-            .map(|path| PathBuf::from(path.trim()))
-            .filter(|path| path.is_file())
-            .or_else(|| find_openmp_library_in_cmake_cache());
+        let library_path = find_openmp_library_in_cmake_cache(tesseract_install_dir);
 
         if let Some(library_path) = library_path {
-            if let Err(error) =
-                fs::write(&cached_library, library_path.to_string_lossy().as_bytes())
-            {
-                println!("cargo:warning=Failed to cache OpenMP library path: {error}");
-            }
-
             let runtime =
                 library_link_name(&library_path).unwrap_or_else(|| expected_runtime.link_name());
             return (library_path.parent().map(Path::to_path_buf), runtime);
@@ -522,10 +446,8 @@ mod build_tesseract {
         (None, expected_runtime.link_name())
     }
 
-    fn find_openmp_library_in_cmake_cache() -> Option<PathBuf> {
-        let cmake_cache = PathBuf::from(env::var("OUT_DIR").ok()?)
-            .join("build")
-            .join("CMakeCache.txt");
+    fn find_openmp_library_in_cmake_cache(tesseract_install_dir: &Path) -> Option<PathBuf> {
+        let cmake_cache = tesseract_install_dir.join("build").join("CMakeCache.txt");
         let contents = fs::read_to_string(cmake_cache).ok()?;
         let library_names = contents
             .lines()
@@ -673,28 +595,32 @@ mod build_tesseract {
         }
     }
 
-    fn clean_cache(cache_dir: &Path) {
-        println!("Cleaning cache directory: {:?}", cache_dir);
-        if cache_dir.exists() {
-            fs::remove_dir_all(cache_dir).expect("Failed to remove cache directory");
+    pub(crate) fn warn_about_legacy_native_dirs() {
+        let user_data_dir = get_user_data_dir();
+        let legacy_dirs: Vec<PathBuf> = ["cache", "third_party", "leptonica", "tesseract"]
+            .iter()
+            .map(|name| user_data_dir.join(name))
+            .filter(|path| path.exists())
+            .collect();
+
+        if !legacy_dirs.is_empty() {
+            let paths = legacy_dirs
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!(
+                "cargo:warning=Legacy tesseract-rs native directories are no longer used and may be removed manually: {paths}"
+            );
         }
     }
 
-    fn build_or_use_cached<F>(name: &str, cache_dir: &Path, install_dir: &Path, build_fn: F)
+    fn build_and_normalize<F>(name: &str, install_dir: &Path, build_fn: F)
     where
         F: FnOnce(),
     {
-        // Expected library name for caching
-        let lib_name = if cfg!(target_os = "windows") {
-            format!("{}.lib", name)
-        } else {
-            format!("lib{}.a", name)
-        };
-
-        let cached_path = cache_dir.join(&lib_name);
-        let out_path = install_dir.join("lib").join(&lib_name);
-
-        // For Windows, check multiple possible library names
+        println!("Building {name} library");
+        build_fn();
         let possible_lib_names: Vec<String> = if cfg!(target_os = "windows") {
             match name {
                 // MSVC debug builds append a "d" suffix to the library name, so
@@ -723,68 +649,49 @@ mod build_tesseract {
         } else {
             vec![format!("lib{}.a", name)]
         };
-
-        fs::create_dir_all(cache_dir).expect("Failed to create cache directory");
-        fs::create_dir_all(out_path.parent().unwrap()).expect("Failed to create output directory");
-
-        if cached_path.exists() {
-            println!("Using cached {} library", name);
-            if let Err(e) = fs::copy(&cached_path, &out_path) {
-                println!("cargo:warning=Failed to copy cached library: {}", e);
-                // If cache copy fails, rebuild
-                build_fn();
-            }
-        } else {
-            println!("Building {} library", name);
-            build_fn();
-
-            // Look for the library with various possible names
-            let mut found_lib_path = None;
-            for lib_name in &possible_lib_names {
-                let lib_path = install_dir.join("lib").join(lib_name);
-                if lib_path.exists() {
-                    println!(
-                        "cargo:warning=Found {} library at: {}",
-                        name,
-                        lib_path.display()
-                    );
-                    found_lib_path = Some(lib_path);
-                    break;
-                }
-            }
-
-            if let Some(lib_path) = found_lib_path {
-                // Copy to expected location for caching
-                if !out_path.exists() {
-                    if let Err(e) = fs::copy(&lib_path, &out_path) {
-                        println!(
-                            "cargo:warning=Failed to copy library to standard location: {}",
-                            e
-                        );
-                    }
-                }
-                // Cache the library
-                if let Err(e) = fs::copy(&lib_path, &cached_path) {
-                    println!("cargo:warning=Failed to cache library: {}", e);
-                }
-            } else {
-                println!(
-                    "cargo:warning=Library {} not found! Searched for: {:?}",
-                    name, possible_lib_names
-                );
-                println!(
-                    "cargo:warning=In directory: {}",
-                    install_dir.join("lib").display()
-                );
-                // List files in lib directory for debugging
-                if let Ok(entries) = fs::read_dir(install_dir.join("lib")) {
-                    println!("cargo:warning=Files in lib directory:");
-                    for entry in entries.flatten() {
-                        println!("cargo:warning=  - {}", entry.file_name().to_string_lossy());
-                    }
-                }
+        let lib_dir = install_dir.join("lib");
+        let mut found_lib_path = None;
+        for lib_name in &possible_lib_names {
+            let lib_path = lib_dir.join(lib_name);
+            if lib_path.is_file() {
+                found_lib_path = Some(lib_path);
+                break;
             }
         }
+        let library_path = found_lib_path.unwrap_or_else(|| {
+                let files = fs::read_dir(&lib_dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                panic!(
+                    "Built {name} library not found in {}. Searched for {possible_lib_names:?}; found {files:?}",
+                    lib_dir.display()
+                );
+        });
+        let canonical_name = if cfg!(target_os = "windows") {
+            format!("{name}.lib")
+        } else {
+            format!("lib{name}.a")
+        };
+        let canonical_path = lib_dir.join(canonical_name);
+        // The Rust FFI modules use the stable `tesseract` and `leptonica`
+        // link names, while some CMake installs use versioned filenames.
+        // Normalize those files inside Cargo's OUT_DIR-backed install tree
+        // to match `canonical_name` defined above.
+        // For example, copy `tesseract55.lib` to `tesseract.lib` so Rust can
+        // link it using the stable name `tesseract`.
+        if library_path != canonical_path {
+            fs::copy(&library_path, &canonical_path).unwrap_or_else(|error| {
+                panic!(
+                    "Failed to create canonical {name} library {} from {}: {error}",
+                    canonical_path.display(),
+                    library_path.display()
+                )
+            });
+        }
+        println!("cargo:warning=Built library: {}", library_path.display());
     }
 }
 
@@ -823,6 +730,9 @@ mod system_tesseract {
 }
 
 fn main() {
+    #[cfg(feature = "build-tesseract")]
+    build_tesseract::warn_about_legacy_native_dirs();
+
     #[cfg(feature = "use-system-tesseract")]
     system_tesseract::link_system_tesseract();
 
@@ -834,7 +744,7 @@ fn main() {
         // In system mode the bundled build (which normally downloads the
         // tessdata files) is skipped, so fetch them here for embedding.
         #[cfg(feature = "use-system-tesseract")]
-        build_tesseract::download_tessdata(&build_tesseract::get_custom_out_dir());
+        build_tesseract::download_tessdata(&build_tesseract::get_user_data_dir());
 
         generate_embedded_tessdata();
     }
@@ -846,7 +756,7 @@ fn generate_embedded_tessdata() {
     use std::path::Path;
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    let tessdata_dir = build_tesseract::get_custom_out_dir().join("tessdata");
+    let tessdata_dir = build_tesseract::get_user_data_dir().join("tessdata");
 
     let mut embedded_code = String::new();
     embedded_code.push_str("// Auto-generated embedded tessdata\n");

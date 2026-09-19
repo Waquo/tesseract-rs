@@ -8,7 +8,6 @@
 - Built-in compilation of Tesseract and Leptonica
 - Automatic download of Tesseract training data (English and Turkish)
 - High-level Rust API for common OCR tasks
-- Caching of compiled libraries for faster subsequent builds
 - Support for multiple operating systems (Linux, macOS, Windows, FreeBSD)
 - Optional embedded tessdata for single-binary deployment
 
@@ -102,31 +101,27 @@ The following environment variables affect the build and test process:
 
 ### Build Variables
 
-- `CARGO_CLEAN`: If set, cleans the cache directory before building
 - `RUSTC_WRAPPER`: If set to "sccache", enables compiler caching with sccache
 - `CC`: Compiler selection for C code (affects Linux builds)
-- `HOME` (Unix) or `APPDATA` (Windows): Used to determine cache directory location
+- `HOME` (Unix) or `APPDATA` (Windows): Used to determine the persistent tessdata location
+
+Run `cargo clean` before switching native compilers, such as between GCC and
+Clang, in the same Cargo target directory.
 
 ### Test Variables
 
-- `TESSDATA_PREFIX` (Optional): Path to override the default tessdata directory. If not set, the crate will use its default cache directory.
+- `TESSDATA_PREFIX` (Optional): Path to override the default tessdata directory. If not set, the crate will use its default user data directory.
 
-## Cache and Data Directories
+## Data Directories
 
-The crate uses the following directory structure based on your operating system:
+Downloaded tessdata is placed in the following platform-specific data directory:
 
 - macOS: `~/Library/Application Support/tesseract-rs`
 - Linux: `~/.tesseract-rs`
 - FreeBSD: `~/.tesseract-rs`
 - Windows: `%APPDATA%/tesseract-rs`
 
-The cache includes:
-
-- Compiled Tesseract and Leptonica libraries
-- Downloaded training data (eng.traineddata, tur.traineddata) in the `tessdata` subdirectory
-- Third-party source code
-
-The training data files are automatically downloaded and placed in the appropriate `tessdata` subdirectory during the build process. You don't need to manually set up the tessdata directory unless you want to use a custom location.
+The training data files are downloaded automatically. You don't need to set up the tessdata directory unless you want to use a custom location.
 
 ## Testing
 
@@ -432,12 +427,15 @@ fn load_test_image(filename: &str) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>
 
 ## Building
 
-The crate will automatically download and compile Tesseract and Leptonica during the build process. This may take some time on the first build, but subsequent builds will use the cached libraries.
+The crate automatically downloads and compiles Tesseract and Leptonica under
+Cargo's `OUT_DIR`. This may take some time on the first build, but Cargo reuses
+unchanged build outputs on subsequent builds.
 
-To clean the cache and force a rebuild:
+To force a clean rebuild:
 
 ```bash
-CARGO_CLEAN=1 cargo build
+cargo clean
+cargo build
 ```
 
 ## Documentation
