@@ -655,7 +655,7 @@ mod build_tesseract {
                 )
             });
         }
-        println!("cargo:warning=Built library: {}", library_path.display());
+        println!("cargo:warning=Using library: {}", library_path.display());
     }
 }
 
