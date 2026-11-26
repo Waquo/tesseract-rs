@@ -18,14 +18,14 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tesseract-rs = { version = "0.4.0", features = ["build-tesseract"] }
+tesseract-rs = { version = "0.4.2", features = ["build-tesseract"] }
 ```
 
 For single-binary deployment with embedded tessdata:
 
 ```toml
 [dependencies]
-tesseract-rs = { version = "0.4.0", features = ["embed-tessdata"] }
+tesseract-rs = { version = "0.4.2", features = ["embed-tessdata"] }
 ```
 
 By default, both English and Turkish tessdata are embedded. To embed only specific languages, set the `TESSERACT_EMBED_LANGUAGES` environment variable during build:
@@ -38,6 +38,8 @@ TESSERACT_EMBED_LANGUAGES=eng cargo build --features embed-tessdata
 TESSERACT_EMBED_LANGUAGES=eng,fra,deu cargo build --features embed-tessdata
 ```
 
+Any language from the top level of [tessdata_best](https://github.com/tesseract-ocr/tessdata_best) (`deu`, `chi_sim`, ...) can be listed. Files that are not in the tessdata directory yet are downloaded during the build, and the build fails if a listed language cannot be found. To embed your own model, place `<name>.traineddata` in the tessdata directory and list `<name>`.
+
 ## Using a system-installed Tesseract
 
 Instead of compiling the bundled Tesseract/Leptonica sources (minutes), you
@@ -46,7 +48,7 @@ feature. The build then locates `tesseract.pc` via pkg-config:
 
 ```toml
 [dependencies]
-tesseract-rs = { version = "0.4.0", default-features = false, features = ["use-system-tesseract"] }
+tesseract-rs = { version = "0.4.2", default-features = false, features = ["use-system-tesseract"] }
 ```
 
 ```bash
@@ -95,10 +97,11 @@ The following environment variables affect the build and test process:
 
 ### Build Variables
 
-- `CARGO_CLEAN`: If set, cleans the cache directory before building
+- `CARGO_CLEAN`: If set, removes the cached build for the current target before building
 - `RUSTC_WRAPPER`: If set to "sccache", enables compiler caching with sccache
 - `CC`: Compiler selection for C code (affects Linux builds)
 - `HOME` (Unix) or `APPDATA` (Windows): Used to determine cache directory location
+- `TESSERACT_EMBED_LANGUAGES`: Comma-separated languages to embed with the `embed-tessdata` feature (default: `eng,tur`)
 
 ### Test Variables
 
@@ -116,10 +119,12 @@ The crate uses the following directory structure based on your operating system:
 The cache includes:
 
 - Compiled Tesseract and Leptonica libraries
-- Downloaded training data (eng.traineddata, tur.traineddata) in the `tessdata` subdirectory
+- Downloaded training data in the `tessdata` subdirectory: eng.traineddata and tur.traineddata for bundled builds, plus any language listed in `TESSERACT_EMBED_LANGUAGES` when `embed-tessdata` is enabled
 - Third-party source code
 
 The training data files are automatically downloaded and placed in the appropriate `tessdata` subdirectory during the build process. You don't need to manually set up the tessdata directory unless you want to use a custom location.
+
+Sources and compiled libraries are kept under `build/<crate version>/`, with one subdirectory per target (for example `x86_64-unknown-linux-gnu`). Different versions of this crate, different targets and, on Windows, different C runtimes therefore do not share build output. Compiler settings taken from the environment (`CC`, `CFLAGS`, ...) are not part of that layout, so run a build with `CARGO_CLEAN=1` after changing them. Directories that belong to versions you no longer use can be deleted. The `tessdata` directory is shared by all of them.
 
 ## Testing
 
@@ -431,6 +436,16 @@ To clean the cache and force a rebuild:
 
 ```bash
 CARGO_CLEAN=1 cargo build
+```
+
+### Static C runtime on Windows
+
+On MSVC targets the bundled libraries are compiled against the same C runtime as your Rust code: the dynamic one (`/MD`) by default, and the static one (`/MT`) when the `crt-static` target feature is enabled:
+
+```toml
+# .cargo/config.toml
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
 ```
 
 ## Documentation
