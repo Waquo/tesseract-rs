@@ -5,6 +5,7 @@
 #   -Expect dynamic   /MD: objects ask for MSVCRT
 #   -Expect static    /MT: objects ask for LIBCMT
 #
+# Pass the CLI build output from cargo build --message-format=json as -CargoMessages.
 # With -Exe, the DLL imports of a linked executable are listed too, and for
 # the static runtime it must not import any C runtime DLL.
 param(
@@ -12,19 +13,22 @@ param(
     [ValidateSet('dynamic', 'static')]
     [string]$Expect,
 
+    [Parameter(Mandatory = $true)]
+    [string[]]$CargoMessages,
+
     [string]$Exe
 )
 
 $ErrorActionPreference = 'Stop'
 
-$dirSuffix = if ($Expect -eq 'static') { '-crt-static' } else { '' }
-$buildRoot = Join-Path $env:APPDATA 'tesseract-rs\build2'
-$targetDirs = @(Get-ChildItem $buildRoot -Directory |
-    ForEach-Object { Get-ChildItem $_.FullName -Directory } |
-    Where-Object { $_.Name -like "*-windows-msvc$dirSuffix" })
+# Cargo may have several OUT_DIRs for this package because the CLI and
+# tests use different features. Read the directory for this CLI build from
+# Cargo's build-script message, which is emitted on fresh and reused builds.
+$nativeBuilds = @($CargoMessages | ForEach-Object { ConvertFrom-Json -InputObject $_ } |
+    Where-Object { $_.reason -eq 'build-script-executed' -and $_.linked_libs -contains 'static=tesseract' })
 
-if ($targetDirs.Count -ne 1) {
-    throw "Expected one '*-windows-msvc$dirSuffix' build directory under $buildRoot, found $($targetDirs.Count)"
+if ($nativeBuilds.Count -ne 1) {
+    throw "Expected one bundled Tesseract build for the CLI, found $($nativeBuilds.Count)"
 }
 
 $wanted = if ($Expect -eq 'static') { 'LIBCMT' } else { 'MSVCRT' }
@@ -35,7 +39,7 @@ $forbidden = if ($Expect -eq 'static') {
 }
 
 foreach ($name in 'leptonica', 'tesseract') {
-    $lib = Join-Path $targetDirs[0].FullName "$name\lib\$name.lib"
+    $lib = Join-Path $nativeBuilds[0].out_dir "$name\lib\$name.lib"
     if (-not (Test-Path $lib)) {
         throw "$lib does not exist"
     }
