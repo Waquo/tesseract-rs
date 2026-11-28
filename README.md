@@ -8,7 +8,6 @@
 - Built-in compilation of Tesseract and Leptonica
 - Automatic download of Tesseract training data (English and Turkish)
 - High-level Rust API for common OCR tasks
-- Caching of compiled libraries for faster subsequent builds
 - Support for multiple operating systems (Linux, macOS, Windows, FreeBSD)
 - Optional embedded tessdata for single-binary deployment
 
@@ -104,17 +103,16 @@ The following environment variables affect the build and test process:
 
 ### Build Variables
 
-- `CARGO_CLEAN`: If set, removes the cached build for the current target before building
 - `RUSTC_WRAPPER`: If set to "sccache", enables compiler caching with sccache
 - `CC`: Compiler selection for C code (affects Linux builds)
-- `HOME` (Unix) or `APPDATA` (Windows): Used to determine cache directory location
+- `HOME` (Unix) or `APPDATA` (Windows): Used to determine the persistent tessdata location
 - `TESSERACT_EMBED_LANGUAGES`: Comma-separated languages to embed with the `embed-tessdata` feature (default: `eng,tur`)
 
 ### Test Variables
 
-- `TESSDATA_PREFIX` (Optional): Path to override the default tessdata directory. If not set, the crate will use its default cache directory.
+- `TESSDATA_PREFIX` (Optional): Path to override the default tessdata directory. If not set, the crate will use its default tessdata directory.
 
-## Cache and Data Directories
+## Data Directories
 
 The crate uses the following directory structure based on your operating system:
 
@@ -123,15 +121,14 @@ The crate uses the following directory structure based on your operating system:
 - FreeBSD: `~/.tesseract-rs`
 - Windows: `%APPDATA%/tesseract-rs`
 
-The cache includes:
+The build downloads English and Turkish training data into the shared `tessdata`
+subdirectory. With `embed-tessdata`, it also downloads any requested models
+that are missing.
 
-- Compiled Tesseract and Leptonica libraries
-- Downloaded training data in the `tessdata` subdirectory: eng.traineddata and tur.traineddata for bundled builds, plus any language listed in `TESSERACT_EMBED_LANGUAGES` when `embed-tessdata` is enabled
-- Third-party source code
-
-The training data files are automatically downloaded and placed in the appropriate `tessdata` subdirectory during the build process. You don't need to manually set up the tessdata directory unless you want to use a custom location.
-
-Sources and compiled libraries are kept under `build2/<crate version>/`, with one subdirectory per target (for example `x86_64-unknown-linux-gnu`). Different versions of this crate, different targets and, on Windows, different C runtimes therefore do not share build output. Compiler settings taken from the environment (`CC`, `CFLAGS`, ...) are not part of that layout, so run a build with `CARGO_CLEAN=1` after changing them. The old `build/` directory can be removed once older checkouts no longer need it. The `tessdata` directory is shared by all of them.
+Cargo keeps the bundled sources, CMake build trees, and native libraries in
+the package's `OUT_DIR`. Earlier versions may have left native build
+directories alongside `tessdata`. You can remove those directories when you
+no longer need them for older versions of the crate.
 
 ## Testing
 
@@ -150,7 +147,7 @@ The project includes several integration tests that verify OCR functionality. To
    cargo test
    ```
 
-Note: Setting `TESSDATA_PREFIX` is optional. If not set, the tests will use the default tessdata directory in the cache location. If you want to use a custom tessdata directory, you can set it:
+Note: Setting `TESSDATA_PREFIX` is optional. If not set, the tests will use the default tessdata directory. If you want to use a custom tessdata directory, you can set it:
 
 ```bash
 # Linux/macOS
@@ -437,15 +434,17 @@ fn load_test_image(filename: &str) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>
 
 ## Building
 
-The crate will automatically download and compile Tesseract and Leptonica during the build process. This may take some time on the first build, but subsequent builds will use the cached libraries.
+The crate downloads and compiles Tesseract and Leptonica in Cargo's `OUT_DIR`.
+The first build may take a while. Cargo and CMake reuse their existing outputs
+on subsequent builds.
 
-To clean the cache and force a rebuild:
+To force a clean rebuild, including after switching native compilers in the
+same Cargo target directory:
 
 ```bash
-CARGO_CLEAN=1 cargo build
+cargo clean
+cargo build
 ```
-
-### Static C runtime on Windows
 
 On MSVC targets the bundled libraries are compiled against the same C runtime as your Rust code: the dynamic one (`/MD`) by default, and the static one (`/MT`) when the `crt-static` target feature is enabled:
 

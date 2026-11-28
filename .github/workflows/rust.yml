@@ -92,18 +92,15 @@ jobs:
         prefix-key: "v1-rust"
         key: "build-${{ matrix.os }}"
     
-    - name: Cache build artifacts
+    - name: Cache tessdata
       uses: actions/cache@v3
       with:
         path: |
-          ${{ runner.os == 'Windows' && 'C:\Users\runneradmin\AppData\Roaming\tesseract-rs' || '' }}
-          ${{ runner.os == 'macOS' && '~/Library/Application Support/tesseract-rs' || '' }}
-          ${{ runner.os == 'Linux' && '~/.tesseract-rs' || '' }}
-        # No restore-keys on purpose: a prefix match would bring back
-        # libraries compiled by an older build.rs, and the build would reuse
-        # them instead of testing the current flags.
-        key: ${{ runner.os }}-tesseract-artifacts-${{ hashFiles('build.rs', 'Cargo.toml') }}
-    
+          ${{ runner.os == 'Windows' && 'C:\Users\runneradmin\AppData\Roaming\tesseract-rs\tessdata' || '' }}
+          ${{ runner.os == 'macOS' && '~/Library/Application Support/tesseract-rs/tessdata' || '' }}
+          ${{ runner.os == 'Linux' && '~/.tesseract-rs/tessdata' || '' }}
+        key: ${{ runner.os }}-tesseract-data-v2-${{ hashFiles('build.rs', 'Cargo.toml') }}
+
     - name: Setup MSVC environment (Windows)
       if: matrix.os == 'windows-latest'
       uses: ilammy/msvc-dev-cmd@v1
@@ -143,7 +140,12 @@ jobs:
     - name: Check C runtime of the built libraries (Windows)
       if: matrix.os == 'windows-latest'
       shell: pwsh
-      run: .github/scripts/check-msvc-runtime.ps1 -Expect dynamic
+      run: |
+        $messages = cargo build -p tesseract-rs-cli --message-format=json
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        .github/scripts/check-msvc-runtime.ps1 -Expect dynamic -CargoMessages $messages
+      env:
+        RUSTC_WRAPPER: ""
     
   # MSVC with the static C runtime (`-C target-feature=+crt-static`).
   # Unlike the Windows build above, this job does not load the MSVC developer
@@ -172,11 +174,11 @@ jobs:
         prefix-key: "v1-rust"
         key: "build-windows-crt-static"
 
-    - name: Cache build artifacts
+    - name: Cache tessdata
       uses: actions/cache@v3
       with:
-        path: C:\Users\runneradmin\AppData\Roaming\tesseract-rs
-        key: ${{ runner.os }}-tesseract-artifacts-crt-static-${{ hashFiles('build.rs', 'Cargo.toml') }}
+        path: C:\Users\runneradmin\AppData\Roaming\tesseract-rs\tessdata
+        key: ${{ runner.os }}-tesseract-data-v2-crt-static-${{ hashFiles('build.rs', 'Cargo.toml') }}
 
     - name: Fix Windows linking (Rename Git's link.exe)
       shell: pwsh
@@ -201,7 +203,10 @@ jobs:
 
     - name: Check C runtime of the built libraries
       shell: pwsh
-      run: .github/scripts/check-msvc-runtime.ps1 -Expect static -Exe target\debug\tesseract-rs.exe
+      run: |
+        $messages = cargo build -p tesseract-rs-cli --message-format=json
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        .github/scripts/check-msvc-runtime.ps1 -Expect static -CargoMessages $messages -Exe target\debug\tesseract-rs.exe
 
   # Fedora installs CMake projects into lib64 by default (GNUInstallDirs),
   # unlike the Debian-based runners above. RHEL, AlmaLinux (the manylinux_2_28
@@ -234,12 +239,12 @@ jobs:
         prefix-key: "v1-rust"
         key: "coverage"
     
-    - name: Cache build artifacts
+    - name: Cache tessdata
       uses: actions/cache@v3
       with:
         path: |
-          ~/.tesseract-rs
-        key: ${{ runner.os }}-tesseract-artifacts-coverage-${{ hashFiles('build.rs', 'Cargo.toml') }}
+          ~/.tesseract-rs/tessdata
+        key: ${{ runner.os }}-tesseract-data-v2-coverage-${{ hashFiles('build.rs', 'Cargo.toml') }}
     
     - name: Install dependencies
       run: |
@@ -277,20 +282,8 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake build-essential clang libc++-dev libc++abi-dev libomp-dev
 
-    - name: Build OpenMP example with Clang
-      run: |
-        cargo build --example embedded_example --features openmp,embed-tessdata --verbose
-
-        # Drop Cargo's copy of the CMake build tree while keeping the shared cache.
-        cargo clean -p tesseract-rs
-        cache_log="$RUNNER_TEMP/openmp-cache-hit.log"
-        if ! cargo build --example embedded_example --features openmp,embed-tessdata -vv >"$cache_log" 2>&1 ||
-           ! grep -F 'Using cached tesseract library' "$cache_log"; then
-          tail -n 100 "$cache_log"
-          exit 1
-        fi
-        test -z "$(find target/debug/build -path '*/out/tesseract/build/CMakeCache.txt' -print -quit)"
-        target/debug/examples/embedded_example
+    - name: Run OpenMP example with Clang
+      run: cargo run --example embedded_example --features openmp,embed-tessdata --verbose
       env:
         CC: clang
         CXX: clang++
